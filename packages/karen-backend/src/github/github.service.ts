@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { Octokit } from '@octokit/rest';
 import { type ServiceResult, ok, err, ServiceError, resultify } from '../common/result';
+import axios from 'axios';
 
 export interface PullRequestParams {
   repoUrl: string;
@@ -218,5 +219,78 @@ If any fix breaks something (unlikely, but possible), just revert that specific 
 Merge this PR and your site will finally look professional. You're welcome.`;
 
     return description;
+  }
+
+  /**
+   * Exchange OAuth authorization code for access token
+   */
+  async exchangeCodeForToken(code: string): Promise<ServiceResult<{ accessToken: string; scope: string }>> {
+    return resultify(
+      async () => {
+        const clientId = process.env.GITHUB_CLIENT_ID;
+        const clientSecret = process.env.GITHUB_CLIENT_SECRET;
+
+        if (!clientId || !clientSecret) {
+          throw new Error('GitHub OAuth credentials not configured');
+        }
+
+        const response = await axios.post(
+          'https://github.com/login/oauth/access_token',
+          {
+            client_id: clientId,
+            client_secret: clientSecret,
+            code,
+          },
+          {
+            headers: {
+              Accept: 'application/json',
+            },
+          }
+        );
+
+        const { access_token, scope } = response.data;
+
+        if (!access_token) {
+          throw new Error('Failed to exchange code for token');
+        }
+
+        return {
+          accessToken: access_token,
+          scope: scope || '',
+        };
+      },
+      (error) => ServiceError.githubError('OAuth token exchange failed', error)
+    );
+  }
+
+  /**
+   * Get GitHub user information
+   */
+  async getGitHubUser(accessToken: string): Promise<ServiceResult<any>> {
+    return resultify(
+      async () => {
+        const octokit = new Octokit({ auth: accessToken });
+        const { data: user } = await octokit.users.getAuthenticated();
+        return user;
+      },
+      (error) => ServiceError.githubError('Failed to fetch GitHub user', error)
+    );
+  }
+
+  /**
+   * Get user's GitHub repositories
+   */
+  async getUserRepositories(accessToken: string): Promise<ServiceResult<any[]>> {
+    return resultify(
+      async () => {
+        const octokit = new Octokit({ auth: accessToken });
+        const { data: repos } = await octokit.repos.listForAuthenticatedUser({
+          sort: 'updated',
+          per_page: 100,
+        });
+        return repos;
+      },
+      (error) => ServiceError.githubError('Failed to fetch repositories', error)
+    );
   }
 }
